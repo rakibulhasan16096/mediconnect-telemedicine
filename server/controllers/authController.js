@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const validator = require('validator');
+const crypto = require('crypto');
 const User = require('../models/User');
 const generateToken = require('../utils/generateToken');
 
@@ -132,4 +133,80 @@ const changePassword = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Password updated successfully', token });
 });
 
-module.exports = { register, login, getMe, changePassword };
+// @desc  Request a password reset link
+// @route POST /api/auth/forgot-password
+const forgotPassword = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    res.status(400);
+    throw new Error('Email is required');
+  }
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+
+  // Always respond the same way, whether or not the email exists,
+  // so attackers can't use this endpoint to discover registered emails
+  const genericResponse = {
+    success: true,
+    message: 'If an account with that email exists, a password reset link has been sent.',
+  };
+
+  if (!user) {
+    return res.json(genericResponse);
+  }
+
+  // Generate a random token, store only its hash in the DB
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+  user.resetPasswordToken = hashedToken;
+  user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+  await user.save();
+
+  const resetUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password/${rawToken}`;
+
+  // NOTE: No email service is configured yet in this project.
+  // In production, this link would be emailed via a service like SendGrid or Nodemailer.
+  // For now, it is logged to the server console so it can be used for testing.
+  console.log('\n----- PASSWORD RESET LINK (dev only) -----');
+  console.log(`User: ${user.email}`);
+  console.log(resetUrl);
+  console.log('-------------------------------------------\n');
+
+  res.json(genericResponse);
+});
+
+// @desc  Reset password using a valid token
+// @route PUT /api/auth/reset-password/:token
+const resetPassword = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 8) {
+    res.status(400);
+    throw new Error('New password must be at least 8 characters long');
+  }
+
+  const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+
+  const user = await User.findOne({
+    resetPasswordToken: hashedToken,
+    resetPasswordExpires: { $gt: Date.now() },
+  }).select('+resetPasswordToken +resetPasswordExpires');
+
+  if (!user) {
+    res.status(400);
+    throw new Error('This reset link is invalid or has expired. Please request a new one.');
+  }
+
+  user.password = newPassword;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpires = undefined;
+  await user.save();
+
+  const authToken = generateToken(user._id, user.role);
+  res.json({ success: true, message: 'Password has been reset successfully.', token: authToken });
+});
+
+module.exports = { register, login, getMe, changePassword, forgotPassword, resetPassword };
