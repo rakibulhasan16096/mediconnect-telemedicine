@@ -43,6 +43,8 @@ const userSchema = new mongoose.Schema(
     lockUntil: { type: Date },
     passwordChangedAt: { type: Date },
     refreshTokenHash: { type: String, select: false },
+    resetPasswordToken: { type: String, select: false },
+    resetPasswordExpires: { type: Date, select: false },
   },
   { timestamps: true }
 );
